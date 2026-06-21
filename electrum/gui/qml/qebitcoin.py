@@ -50,7 +50,7 @@ class QEBitcoin(QObject):
     @pyqtSlot()
     @pyqtSlot(str)
     @pyqtSlot(str, str)
-    def generateSeed(self, seed_type='segwit', language='en'):
+    def generateSeed(self, seed_type='standard', language='en'):  # Bitmark: legacy, no SegWit
         self._logger.debug('generating seed of type ' + str(seed_type))
 
         async def co_gen_seed(seed_type, language):

@@ -12,12 +12,13 @@ WizardComponent {
         // sets the first radio button or the last selected one when going back
         wizard_data['wallet_type'] = wallettypegroup.checkedButton.wallettype
         delete wizard_data['seed_type']
+        // Bitmark has no SegWit; default to legacy 'standard' seeds (P2PKH 'b...').
         if (wizard_data['wallet_type'] == 'standard')
-            wizard_data['seed_type'] = 'segwit'
+            wizard_data['seed_type'] = 'standard'
         else if (wizard_data['wallet_type'] == '2fa')
             wizard_data['seed_type'] = '2fa_segwit'
         else if (wizard_data['wallet_type'] == 'multisig')
-            wizard_data['seed_type'] = 'segwit'
+            wizard_data['seed_type'] = 'standard'
     }
 
     ButtonGroup {

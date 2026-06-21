@@ -201,7 +201,8 @@ class Mnemonic(Logger):
     def make_seed(self, *, seed_type: str = None, num_bits: int = None) -> str:
         from .keystore import bip39_is_checksum_valid
         if seed_type is None:
-            seed_type = 'segwit'
+            # Bitmark has no SegWit; default to legacy standard (P2PKH 'b...').
+            seed_type = 'standard'
         if num_bits is None:
             num_bits = 132
         prefix = version.seed_prefix(seed_type)
