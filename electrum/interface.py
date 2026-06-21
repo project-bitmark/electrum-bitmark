@@ -1100,7 +1100,8 @@ class Interface(Logger):
             item = await header_queue.get()
             raw_header = item[0]
             height = raw_header['height']
-            header_bytes = bfh(raw_header['hex'])
+            # strip any auxpow blob; keep only the pure header
+            header_bytes = pure_header_bytes(bfh(raw_header['hex']))
             header_dict = blockchain.deserialize_header(header_bytes, height)
             self.tip_header = header_dict
             self.tip = height
