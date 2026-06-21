@@ -37,11 +37,39 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-HEADER_SIZE = 80  # bytes
+HEADER_SIZE = 80  # bytes (standard-algo header; equihash headers are larger, see below)
 CHUNK_SIZE = 2016  # num headers in a difficulty retarget period
 
 # see https://github.com/bitcoin/bitcoin/blob/feedb9c84e72e4fff489810a2bbeec09bcda5763/src/chainparams.cpp#L76
 MAX_TARGET = 0x00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff  # compact: 0x1d00ffff
+
+# --- Bitmark multi-algorithm PoW ---------------------------------------------
+# Bitmark encodes the mining algorithm in the block version: bit 8 = auxpow,
+# bits 9-11 = algo. Most algos use the standard 80-byte header. EQUIHASH blocks
+# use an extended header (byte-identical to classic Zcash): an extra 32-byte
+# hashReserved after the merkle root, a 256-bit nonce, and a length-prefixed
+# equihash solution in place of the 4-byte nonce. The block identity hash is
+# double-SHA256 over the *full* header (80 bytes for standard algos, ~1487 for
+# equihash). See bitmark src/pureheader.{h,cpp} (GetHash / GetHashE).
+BITMARK_ALGO_EQUIHASH = 6
+# Equihash (n=200, k=9) solution is always 1344 bytes -> a fixed 1487-byte
+# header: 4+32+32+32(reserved)+4+4+32(nonce256)+3(varint 0xfd4005)+1344.
+EQUIHASH_SOLUTION_SIZE = 1344
+EQUIHASH_HEADER_SIZE = 1487
+# On-disk we use fixed-size slots sized to the largest header (zcash-style).
+MAX_HEADER_SIZE = EQUIHASH_HEADER_SIZE
+
+
+def header_algo(version: int) -> int:
+    return (version >> 9) & 7
+
+
+def is_equihash_header(version: int) -> bool:
+    return header_algo(version) == BITMARK_ALGO_EQUIHASH
+
+
+def expected_header_size(version: int) -> int:
+    return EQUIHASH_HEADER_SIZE if is_equihash_header(version) else HEADER_SIZE
 
 
 class MissingHeader(Exception):
@@ -53,28 +81,69 @@ class InvalidHeader(Exception):
 
 
 def serialize_header(header_dict: dict) -> bytes:
+    version = header_dict['version']
     s = (
-        int.to_bytes(header_dict['version'], length=4, byteorder="little", signed=False)
+        int.to_bytes(version, length=4, byteorder="little", signed=False)
         + bfh(header_dict['prev_block_hash'])[::-1]
-        + bfh(header_dict['merkle_root'])[::-1]
-        + int.to_bytes(int(header_dict['timestamp']), length=4, byteorder="little", signed=False)
-        + int.to_bytes(int(header_dict['bits']), length=4, byteorder="little", signed=False)
-        + int.to_bytes(int(header_dict['nonce']), length=4, byteorder="little", signed=False))
+        + bfh(header_dict['merkle_root'])[::-1])
+    if is_equihash_header(version):
+        s += (
+            bfh(header_dict['reserved_hash'])[::-1]
+            + int.to_bytes(int(header_dict['timestamp']), length=4, byteorder="little", signed=False)
+            + int.to_bytes(int(header_dict['bits']), length=4, byteorder="little", signed=False)
+            + bfh(header_dict['nonce'])[::-1]      # 256-bit nonce
+            + bfh(header_dict['sol_size'])         # solution-length varint (raw bytes)
+            + bfh(header_dict['solution']))        # equihash solution
+    else:
+        s += (
+            int.to_bytes(int(header_dict['timestamp']), length=4, byteorder="little", signed=False)
+            + int.to_bytes(int(header_dict['bits']), length=4, byteorder="little", signed=False)
+            + int.to_bytes(int(header_dict['nonce']), length=4, byteorder="little", signed=False))
     return s
+
+
+def _read_varint(s: bytes, offset: int):
+    '''Return (value, bytes_consumed) for a Bitcoin varint at offset.'''
+    n = s[offset]
+    if n < 0xfd:
+        return n, 1
+    if n == 0xfd:
+        return int.from_bytes(s[offset+1:offset+3], 'little'), 3
+    if n == 0xfe:
+        return int.from_bytes(s[offset+1:offset+5], 'little'), 5
+    return int.from_bytes(s[offset+1:offset+9], 'little'), 9
 
 
 def deserialize_header(s: bytes, height: int) -> dict:
     if not s:
         raise InvalidHeader('Invalid header: {}'.format(s))
-    if len(s) != HEADER_SIZE:
-        raise InvalidHeader('Invalid header length: {}'.format(len(s)))
-    h = {}
-    h['version'] = int.from_bytes(s[0:4], byteorder='little')
-    h['prev_block_hash'] = hash_encode(s[4:36])
-    h['merkle_root'] = hash_encode(s[36:68])
-    h['timestamp'] = int.from_bytes(s[68:72], byteorder='little')
-    h['bits'] = int.from_bytes(s[72:76], byteorder='little')
-    h['nonce'] = int.from_bytes(s[76:80], byteorder='little')
+    version = int.from_bytes(s[0:4], byteorder='little')
+    h = {
+        'version': version,
+        'prev_block_hash': hash_encode(s[4:36]),
+        'merkle_root': hash_encode(s[36:68]),
+    }
+    if is_equihash_header(version):
+        # extended (zcash-style) equihash header
+        if len(s) < 143:
+            raise InvalidHeader('Invalid equihash header length: {}'.format(len(s)))
+        h['reserved_hash'] = hash_encode(s[68:100])
+        h['timestamp'] = int.from_bytes(s[100:104], byteorder='little')
+        h['bits'] = int.from_bytes(s[104:108], byteorder='little')
+        h['nonce'] = hash_encode(s[108:140])       # 256-bit nonce
+        sol_size, vlen = _read_varint(s, 140)
+        sol_start = 140 + vlen
+        sol_end = sol_start + sol_size
+        if len(s) < sol_end:
+            raise InvalidHeader('Invalid equihash solution length: {}'.format(len(s)))
+        h['sol_size'] = s[140:sol_start].hex()
+        h['solution'] = s[sol_start:sol_end].hex()
+    else:
+        if len(s) != HEADER_SIZE:
+            raise InvalidHeader('Invalid header length: {}'.format(len(s)))
+        h['timestamp'] = int.from_bytes(s[68:72], byteorder='little')
+        h['bits'] = int.from_bytes(s[72:76], byteorder='little')
+        h['nonce'] = int.from_bytes(s[76:80], byteorder='little')
     h['block_height'] = height
     return h
 
