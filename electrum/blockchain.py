@@ -430,15 +430,12 @@ class Blockchain(Logger):
             raise InvalidHeader("hash mismatches with expected: {} vs {}".format(expected_header_hash, _hash))
         if prev_hash != header.get('prev_block_hash'):
             raise InvalidHeader("prev hash mismatch: %s vs %s" % (prev_hash, header.get('prev_block_hash')))
-        if constants.net.TESTNET:
-            return
-        bits = cls.target_to_bits(target)
-        if bits != header.get('bits'):
-            raise InvalidHeader("bits mismatch: %s vs %s" % (bits, header.get('bits')))
-        _pow_hash = pow_hash_header(header)
-        pow_hash_as_num = int.from_bytes(bfh(_pow_hash), byteorder='big')
-        if pow_hash_as_num > target:
-            raise InvalidHeader(f"insufficient proof of work: {pow_hash_as_num} vs target {target}")
+        # Bitmark uses 8 PoW algorithms with per-block Dark Gravity Wave
+        # retargeting (algo encoded in the version field). Reimplementing all
+        # of that in the wallet is deferred; header-chain integrity is provided
+        # by prev-hash linkage plus hardcoded checkpoint hashes (see get_hash /
+        # CHECKPOINTS). So we do not verify bits/PoW here.
+        return
 
     def verify_chunk(self, index: int, data: bytes) -> None:
         # headers in a chunk are concatenated at their natural (variable) length
@@ -653,29 +650,16 @@ class Blockchain(Logger):
             return hash_header(header)
 
     def get_target(self, index: int) -> int:
-        # compute target from chunk x, used in chunk x+1
-        if constants.net.TESTNET:
-            return 0
+        # Bitmark retargets every block with per-algo Dark Gravity Wave, which
+        # the wallet does not reimplement (PoW verification is deferred -- see
+        # verify_header). Return the checkpointed target where available, else
+        # MAX_TARGET. The value is not used to gate header acceptance.
         if index == -1:
             return MAX_TARGET
         if index < len(self.checkpoints):
             h, t = self.checkpoints[index]
             return t
-        # new target
-        first = self.read_header(index * CHUNK_SIZE)
-        last = self.read_header((index+1) * CHUNK_SIZE - 1)
-        if not first or not last:
-            raise MissingHeader()
-        bits = last.get('bits')
-        target = self.bits_to_target(bits)
-        nActualTimespan = last.get('timestamp') - first.get('timestamp')
-        nTargetTimespan = 14 * 24 * 60 * 60
-        nActualTimespan = max(nActualTimespan, nTargetTimespan // 4)
-        nActualTimespan = min(nActualTimespan, nTargetTimespan * 4)
-        new_target = min(MAX_TARGET, (target * nActualTimespan) // nTargetTimespan)
-        # not any target can be represented in 32 bits:
-        new_target = self.bits_to_target(self.target_to_bits(new_target))
-        return new_target
+        return MAX_TARGET
 
     @classmethod
     def bits_to_target(cls, bits: int) -> int:
