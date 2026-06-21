@@ -51,3 +51,5 @@ electrum/*.so.*
 electrum/*.dll
 electrum/*.dylib
 contrib/osx/*.dylib
+venv/
+venv-wallet/
