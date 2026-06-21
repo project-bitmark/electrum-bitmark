@@ -56,7 +56,7 @@ from . import x509
 from . import pem
 from . import version
 from . import blockchain
-from .blockchain import Blockchain, HEADER_SIZE, CHUNK_SIZE, wire_header_len, split_wire_headers
+from .blockchain import Blockchain, HEADER_SIZE, CHUNK_SIZE, wire_header_len, split_wire_headers, pure_header_bytes
 from . import bitcoin
 from .bitcoin import DummyAddress, DummyAddressUsedInTxException
 from . import constants
@@ -842,7 +842,8 @@ class Interface(Logger):
             return blockchain.deserialize_header(raw_header, height)
         self.logger.info(f'requesting block header {height} in {mode=}')
         res = await self.session.send_request('blockchain.block.header', [height], timeout=timeout)
-        return blockchain.deserialize_header(bytes.fromhex(res), height)
+        # strip any auxpow blob; keep only the pure header
+        return blockchain.deserialize_header(pure_header_bytes(bytes.fromhex(res)), height)
 
     async def get_block_headers(
         self,
@@ -879,10 +880,13 @@ class Interface(Logger):
                 assert_hex_str(item)
                 raw = bfh(item)
                 # Bitmark headers are variable length (80B standard, ~1487B
-                # equihash); each list item must be exactly one well-formed header.
-                if not raw or len(raw) != wire_header_len(raw, 0):
+                # equihash). The server may also append an auxpow blob on
+                # merged-mined blocks, which the wallet never needs; keep only
+                # the pure header (the part forming the block identity hash).
+                pure = pure_header_bytes(raw)
+                if not pure:
                     raise RequestCorrupted(f"invalid header size: {len(raw)} bytes")
-                headers.append(raw)
+                headers.append(pure)
             if len(hex_headers_list) != res['count']:
                 raise RequestCorrupted(f"{len(hex_headers_list)=} != {res['count']=}")
         else: # proto 1.4

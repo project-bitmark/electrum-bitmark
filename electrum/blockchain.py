@@ -179,6 +179,16 @@ def wire_header_len(data: bytes, offset: int = 0) -> int:
     return 140 + vlen + sol_size
 
 
+def pure_header_bytes(raw: bytes) -> bytes:
+    '''Return the pure header (the part that forms the block identity hash),
+    stripping any trailing auxpow blob. For Bitmark the pure header length is
+    exactly wire_header_len: 80 for standard algos, the full extended header
+    for equihash.'''
+    if len(raw) < HEADER_SIZE:
+        return b''
+    return raw[:wire_header_len(raw, 0)]
+
+
 def split_wire_headers(data: bytes) -> Sequence[bytes]:
     '''Split a concatenation of variable-length headers into individual ones.'''
     headers = []
