@@ -56,7 +56,7 @@ from . import x509
 from . import pem
 from . import version
 from . import blockchain
-from .blockchain import Blockchain, HEADER_SIZE, CHUNK_SIZE
+from .blockchain import Blockchain, HEADER_SIZE, CHUNK_SIZE, wire_header_len, split_wire_headers
 from . import bitcoin
 from .bitcoin import DummyAddress, DummyAddressUsedInTxException
 from . import constants
@@ -874,19 +874,24 @@ class Interface(Logger):
         if self.active_protocol_tuple >= (1, 6):
             hex_headers_list = assert_dict_contains_field(res, field_name='headers')
             assert_list_or_tuple(hex_headers_list)
+            headers = []
             for item in hex_headers_list:
                 assert_hex_str(item)
-                if len(item) != HEADER_SIZE * 2:
-                    raise RequestCorrupted(f"invalid header size. got {len(item)//2}, expected {HEADER_SIZE}")
+                raw = bfh(item)
+                # Bitmark headers are variable length (80B standard, ~1487B
+                # equihash); each list item must be exactly one well-formed header.
+                if not raw or len(raw) != wire_header_len(raw, 0):
+                    raise RequestCorrupted(f"invalid header size: {len(raw)} bytes")
+                headers.append(raw)
             if len(hex_headers_list) != res['count']:
                 raise RequestCorrupted(f"{len(hex_headers_list)=} != {res['count']=}")
-            headers = list(bfh(hex_header) for hex_header in hex_headers_list)
         else: # proto 1.4
             hex_headers_concat = assert_dict_contains_field(res, field_name='hex')
             assert_hex_str(hex_headers_concat)
-            if len(hex_headers_concat) != HEADER_SIZE * 2 * res['count']:
+            # variable-length headers: split sequentially, not by fixed stride
+            headers = list(split_wire_headers(bfh(hex_headers_concat)))
+            if len(headers) != res['count']:
                 raise RequestCorrupted('inconsistent chunk hex and count')
-            headers = list(util.chunks(bfh(hex_headers_concat), size=HEADER_SIZE))
         # we never request more than MAX_NUM_HEADERS_IN_REQUEST headers, but we enforce those fit in a single response
         if res['max'] < MAX_NUM_HEADERS_PER_REQUEST:
             raise RequestCorrupted(f"server uses too low 'max' count for block.headers: {res['max']} < {MAX_NUM_HEADERS_PER_REQUEST}")

@@ -164,6 +164,47 @@ def hash_raw_header(header: bytes) -> str:
 pow_hash_header = hash_header
 
 
+# --- variable-length header storage helpers ----------------------------------
+# Bitmark headers are 80 bytes for standard algos and ~1487 for equihash. On
+# the wire (server -> wallet) they are concatenated at their natural length, so
+# a chunk must be parsed sequentially. On disk we store every header in a
+# fixed MAX_HEADER_SIZE slot (zero-padded) so height->offset stays O(1).
+
+def wire_header_len(data: bytes, offset: int = 0) -> int:
+    '''Length of the header starting at `offset` in a raw (wire) byte stream.'''
+    version = int.from_bytes(data[offset:offset+4], byteorder='little')
+    if not is_equihash_header(version):
+        return HEADER_SIZE
+    sol_size, vlen = _read_varint(data, offset + 140)
+    return 140 + vlen + sol_size
+
+
+def split_wire_headers(data: bytes) -> Sequence[bytes]:
+    '''Split a concatenation of variable-length headers into individual ones.'''
+    headers = []
+    offset = 0
+    n = len(data)
+    while offset < n:
+        size = wire_header_len(data, offset)
+        if offset + size > n:
+            raise InvalidHeader('truncated header in chunk at offset {}'.format(offset))
+        headers.append(data[offset:offset+size])
+        offset += size
+    return headers
+
+
+def pad_header_to_slot(raw_header: bytes) -> bytes:
+    '''Pad a natural-length header into a fixed MAX_HEADER_SIZE disk slot.'''
+    if len(raw_header) > MAX_HEADER_SIZE:
+        raise InvalidHeader('header too large: {}'.format(len(raw_header)))
+    return raw_header + bytes(MAX_HEADER_SIZE - len(raw_header))
+
+
+def unpad_header_slot(slot: bytes) -> bytes:
+    '''Recover the natural-length header from a fixed-size disk slot.'''
+    return slot[:wire_header_len(slot, 0)]
+
+
 # key: blockhash hex at forkpoint
 # the chain at some key is the best chain that includes the given hash
 blockchains = {}  # type: Dict[str, Blockchain]
@@ -245,7 +286,7 @@ _CHAINWORK_CACHE = {
 def init_headers_file_for_best_chain():
     b = get_best_chain()
     filename = b.path()
-    length = HEADER_SIZE * len(constants.net.CHECKPOINTS) * CHUNK_SIZE
+    length = MAX_HEADER_SIZE * len(constants.net.CHECKPOINTS) * CHUNK_SIZE
     if not os.path.exists(filename) or os.path.getsize(filename) < length:
         with open(filename, 'wb') as f:
             if length > 0:
@@ -370,7 +411,7 @@ class Blockchain(Logger):
     @with_lock
     def update_size(self) -> None:
         p = self.path()
-        self._size = os.path.getsize(p)//HEADER_SIZE if os.path.exists(p) else 0
+        self._size = os.path.getsize(p)//MAX_HEADER_SIZE if os.path.exists(p) else 0
 
     @classmethod
     def verify_header(cls, header: dict, prev_hash: str, target: int, expected_header_hash: str=None) -> None:
@@ -390,18 +431,18 @@ class Blockchain(Logger):
             raise InvalidHeader(f"insufficient proof of work: {pow_hash_as_num} vs target {target}")
 
     def verify_chunk(self, index: int, data: bytes) -> None:
-        num = len(data) // HEADER_SIZE
+        # headers in a chunk are concatenated at their natural (variable) length
+        raw_headers = split_wire_headers(data)
         start_height = index * CHUNK_SIZE
         prev_hash = self.get_hash(start_height - 1)
         target = self.get_target(index-1)
-        for i in range(num):
+        for i, raw_header in enumerate(raw_headers):
             height = start_height + i
             try:
                 expected_header_hash = self.get_hash(height)
             except MissingHeader:
                 expected_header_hash = None
-            raw_header = data[i*HEADER_SIZE : (i+1)*HEADER_SIZE]
-            header = deserialize_header(raw_header, index*CHUNK_SIZE + i)
+            header = deserialize_header(raw_header, height)
             self.verify_header(header, prev_hash, target, expected_header_hash)
             prev_hash = hash_header(header)
 
@@ -428,15 +469,18 @@ class Blockchain(Logger):
             main_chain.save_chunk(index, chunk)
             return
 
+        # split the variable-length wire chunk into individual headers, then
+        # re-pack into fixed-size disk slots (header counts, not byte offsets).
+        raw_headers = list(split_wire_headers(chunk))
         delta_height = (index * CHUNK_SIZE - self.forkpoint)
-        delta_bytes = delta_height * HEADER_SIZE
         # if this chunk contains our forkpoint, only save the part after forkpoint
         # (the part before is the responsibility of the parent)
-        if delta_bytes < 0:
-            chunk = chunk[-delta_bytes:]
-            delta_bytes = 0
+        if delta_height < 0:
+            raw_headers = raw_headers[-delta_height:]
+            delta_height = 0
+        slot_data = b''.join(pad_header_to_slot(h) for h in raw_headers)
         truncate = not chunk_within_checkpoint_region
-        self.write(chunk, delta_bytes, truncate)
+        self.write(slot_data, delta_height * MAX_HEADER_SIZE, truncate)
         self.swap_with_parent()
 
     def swap_with_parent(self) -> None:
@@ -482,14 +526,14 @@ class Blockchain(Logger):
         assert forkpoint > parent.forkpoint, (f"forkpoint of parent chain ({parent.forkpoint}) "
                                               f"should be at lower height than children's ({forkpoint})")
         with open(parent.path(), 'rb') as f:
-            f.seek((forkpoint - parent.forkpoint)*HEADER_SIZE)
-            parent_data = f.read(parent_branch_size*HEADER_SIZE)
+            f.seek((forkpoint - parent.forkpoint)*MAX_HEADER_SIZE)
+            parent_data = f.read(parent_branch_size*MAX_HEADER_SIZE)
         self.write(parent_data, 0)
-        parent.write(my_data, (forkpoint - parent.forkpoint)*HEADER_SIZE)
+        parent.write(my_data, (forkpoint - parent.forkpoint)*MAX_HEADER_SIZE)
         # swap parameters
         self.parent, parent.parent = parent.parent, self  # type: Optional[Blockchain], Optional[Blockchain]
         self.forkpoint, parent.forkpoint = parent.forkpoint, self.forkpoint
-        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_raw_header(parent_data[:HEADER_SIZE])
+        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_raw_header(unpad_header_slot(parent_data[:MAX_HEADER_SIZE]))
         self._prev_hash, parent._prev_hash = parent._prev_hash, self._prev_hash
         # parent's new name
         os.replace(child_old_name, parent.path())
@@ -518,7 +562,7 @@ class Blockchain(Logger):
         filename = self.path()
         self.assert_headers_file_available(filename)
         with open(filename, 'rb+') as f:
-            if truncate and offset != self._size * HEADER_SIZE:
+            if truncate and offset != self._size * MAX_HEADER_SIZE:
                 f.seek(offset)
                 f.truncate()
             f.seek(offset)
@@ -531,12 +575,12 @@ class Blockchain(Logger):
     @with_lock
     def save_header(self, header: dict) -> None:
         delta = header.get('block_height') - self.forkpoint
-        data = serialize_header(header)
+        data = pad_header_to_slot(serialize_header(header))
         # headers are only _appended_ to the end:
         assert delta == self.size(), (delta, self.size())
-        assert len(data) == HEADER_SIZE
+        assert len(data) == MAX_HEADER_SIZE
         # note: we don't fsync, to improve perf. losing headers at end of file is ok.
-        self.write(data, delta*HEADER_SIZE, fsync=False)
+        self.write(data, delta*MAX_HEADER_SIZE, fsync=False)
         self.swap_with_parent()
 
     @with_lock
@@ -551,13 +595,13 @@ class Blockchain(Logger):
         name = self.path()
         self.assert_headers_file_available(name)
         with open(name, 'rb') as f:
-            f.seek(delta * HEADER_SIZE)
-            h = f.read(HEADER_SIZE)
-            if len(h) < HEADER_SIZE:
-                raise Exception('Expected to read a full header. This was only {} bytes'.format(len(h)))
-        if h == bytes([0])*HEADER_SIZE:
+            f.seek(delta * MAX_HEADER_SIZE)
+            h = f.read(MAX_HEADER_SIZE)
+            if len(h) < MAX_HEADER_SIZE:
+                raise Exception('Expected to read a full header slot. This was only {} bytes'.format(len(h)))
+        if h == bytes(MAX_HEADER_SIZE):
             return None
-        return deserialize_header(h, height)
+        return deserialize_header(unpad_header_slot(h), height)
 
     def header_at_tip(self) -> Optional[dict]:
         """Return latest header."""
