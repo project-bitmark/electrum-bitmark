@@ -139,16 +139,22 @@ class AbstractNet:
 
 class BitcoinMainnet(AbstractNet):
 
+    # Bitmark mainnet. Authoritative values from bitmark
+    # src/kernel/chainparams.cpp (CMainParams), verified against the live
+    # node. Bitmark is a 2014-era chain: no SegWit, no Lightning. The
+    # BIP32 xprv/xpub version bytes are identical to Bitcoin's. SEGWIT_HRP
+    # is defined by the daemon ("btm") but unused -- the wallet is legacy
+    # P2PKH/P2SH only.
     NET_NAME = "mainnet"
     TESTNET = False
-    WIF_PREFIX = 0x80
-    ADDRTYPE_P2PKH = 0
-    ADDRTYPE_P2SH = 5
-    SEGWIT_HRP = "bc"
+    WIF_PREFIX = 0xd5           # 213
+    ADDRTYPE_P2PKH = 0x55       # 85  -> addresses start with 'b'
+    ADDRTYPE_P2SH = 0x05        # 5
+    SEGWIT_HRP = "btm"          # defined but unused (no SegWit)
     BOLT11_HRP = SEGWIT_HRP
-    GENESIS = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+    GENESIS = "c1fb746e87e89ae75bdec2ef0639a1f6786744639ce3d0ece1dcf979b79137cb"
     DEFAULT_PORTS = {'t': '50001', 's': '50002'}
-    BLOCK_HEIGHT_FIRST_LIGHTNING_CHANNELS = 497000
+    BLOCK_HEIGHT_FIRST_LIGHTNING_CHANNELS = 0
 
     XPRV_HEADERS = {
         'standard':    0x0488ade4,  # xprv
@@ -166,13 +172,9 @@ class BitcoinMainnet(AbstractNet):
         'p2wsh':       0x02aa7ed3,  # Zpub
     }
     XPUB_HEADERS_INV = inv_dict(XPUB_HEADERS)
-    BIP44_COIN_TYPE = 0
+    BIP44_COIN_TYPE = 210       # SLIP-44 index for Bitmark (BTM)
     LN_REALM_BYTE = 0
-    LN_DNS_SEEDS = [
-        'nodes.lightning.directory.',
-        'lseed.bitcoinstats.com.',
-        'lseed.darosior.ninja',
-    ]
+    LN_DNS_SEEDS = []           # no Lightning on Bitmark
 
     @classmethod
     def datadir_subdir(cls):
@@ -181,14 +183,17 @@ class BitcoinMainnet(AbstractNet):
 
 class BitcoinTestnet(AbstractNet):
 
+    # Bitmark testnet. From bitmark src/kernel/chainparams.cpp
+    # (CTestNetParams). NOTE: testnet P2PKH is 0x82 (130), NOT 0x6f -- 0x6f
+    # is Bitmark *signet*. Not yet verified against a live testnet node.
     NET_NAME = "testnet"
     TESTNET = True
-    WIF_PREFIX = 0xef
-    ADDRTYPE_P2PKH = 111
-    ADDRTYPE_P2SH = 196
-    SEGWIT_HRP = "tb"
+    WIF_PREFIX = 0xd6           # 214
+    ADDRTYPE_P2PKH = 0x82       # 130
+    ADDRTYPE_P2SH = 0xc4        # 196
+    SEGWIT_HRP = "tbtm"         # defined but unused (no SegWit)
     BOLT11_HRP = SEGWIT_HRP
-    GENESIS = "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943"
+    GENESIS = "45ccef675b070c6eae865e1fcd3978253ec52a960af9abbb91bd1d935513e5be"
     DEFAULT_PORTS = {'t': '51001', 's': '51002'}
 
     XPRV_HEADERS = {
