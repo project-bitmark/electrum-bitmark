@@ -106,11 +106,12 @@ WizardComponent {
                 wrapMode: Text.Wrap
             }
 
-            // standard
+            // standard (Bitmark has no SegWit; legacy p2pkh is the only valid single-sig type)
             ElRadioButton {
                 Layout.fillWidth: true
                 ButtonGroup.group: scripttypegroup
                 property string scripttype: 'p2pkh'
+                checked: !isMultisig
                 text: qsTr('legacy (p2pkh)')
                 visible: !isMultisig
             }
@@ -119,15 +120,14 @@ WizardComponent {
                 ButtonGroup.group: scripttypegroup
                 property string scripttype: 'p2wpkh-p2sh'
                 text: qsTr('wrapped segwit (p2wpkh-p2sh)')
-                visible: !isMultisig
+                visible: false  // Bitmark has no SegWit
             }
             ElRadioButton {
                 Layout.fillWidth: true
                 ButtonGroup.group: scripttypegroup
                 property string scripttype: 'p2wpkh'
-                checked: !isMultisig
                 text: qsTr('native segwit (p2wpkh)')
-                visible: !isMultisig
+                visible: false  // Bitmark has no SegWit
             }
 
             // multisig

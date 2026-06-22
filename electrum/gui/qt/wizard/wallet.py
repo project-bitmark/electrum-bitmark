@@ -447,7 +447,8 @@ class WCCreateSeed(WalletWizardComponent):
     def __init__(self, parent, wizard):
         WalletWizardComponent.__init__(self, parent, wizard, title=_('Wallet Seed'))
         self._busy = True
-        self.seed_type = 'standard' if self.wizard.config.WIZARD_DONT_CREATE_SEGWIT else 'segwit'
+        # Bitmark has no SegWit; always create legacy 'standard' (P2PKH 'b...') seeds.
+        self.seed_type = 'standard'
         self.seed_widget = None
         self.seed = None
 
@@ -698,15 +699,12 @@ class WCScriptAndDerivation(WalletWizardComponent, Logger):
             else:
                 default_choice = 'p2wsh'
         else:
-            default_choice = 'p2wpkh'
+            # Bitmark has no SegWit; legacy (p2pkh) is the only valid script type.
+            default_choice = 'standard'
             choices = [
                 # TODO: nicer to refactor 'standard' to 'p2pkh', but backend wallet still uses 'standard'
                 ChoiceItem(key='standard', label='legacy (p2pkh)',
                            extra_data=bip44_derivation(0, bip43_purpose=44)),
-                ChoiceItem(key='p2wpkh-p2sh', label='p2sh-segwit (p2wpkh-p2sh)',
-                           extra_data=bip44_derivation(0, bip43_purpose=49)),
-                ChoiceItem(key='p2wpkh', label='native segwit (p2wpkh)',
-                           extra_data=bip44_derivation(0, bip43_purpose=84)),
             ]
 
         if self.wizard_data['wallet_type'] == 'standard' and not self.wizard_data['keystore_type'] == 'hardware':
